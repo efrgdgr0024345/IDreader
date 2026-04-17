@@ -157,11 +157,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
 <title>Face Map Capture Debug</title>
 <style>
     :root{
-        --bg:#0a1016;
+        --bg:#ffffff;
         --panel:#101923;
         --panel2:#162332;
         --line:#294058;
-        --text:#e8f0f7;
+        --text:#111111;
         --muted:#99aec2;
         --good:#39d98a;
         --warn:#ffc857;
@@ -171,7 +171,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
     *{box-sizing:border-box}
     body{
         margin:0;
-        background:linear-gradient(180deg,#091018,#0f1722);
+        background:#ffffff;
         color:var(--text);
         font-family:Arial,Helvetica,sans-serif;
     }
