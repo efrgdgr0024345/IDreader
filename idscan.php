@@ -182,13 +182,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
     $current['id_image_file'] = $primaryDisplayIdFile;
     $current['id_crop_image_file'] = $croppedImageFile;
     $current['id_full_image_file'] = $idImageFile;
+    $current['json_file'] = basename($scanJsonPath);
     $current['updated_at'] = date('c');
     $current['timestamp'] = time();
     $current['status'] = 'id_captured_complete';
     $current['ready_for_next_scan'] = true;
     $current['display_message'] = 'Ready to scan next person';
+    $current['id_scan_saved_at'] = date('c');
 
-    write_json_file($currentScanFile, $current);
+    if (!write_json_file($currentScanFile, $current)) {
+        json_response(['ok' => false, 'error' => 'Failed to update current_scan file'], 500);
+    }
 
     json_response([
         'ok' => true,

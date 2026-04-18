@@ -632,6 +632,7 @@ let latestSavedScanId = '';
 let latestSavedImageFile = '';
 let latestSavedIdImageFile = '';
 let lastCurrentScanTimestamp = 0;
+let lastCurrentScanStatus = '';
 
 let ocrInFlight = false;
 let ocrLastStartedFile = '';
@@ -1547,7 +1548,7 @@ async function pollCurrentScan() {
         const scanId = current.scan_id || '';
         const timestamp = Number(current.timestamp || 0);
         const imageFile = current.image_file || '';
-        const idImageFile = current.id_image_file || '';
+        const idImageFile = current.id_image_file || current.id_full_image_file || '';
         const status = current.status || '';
 
         if (!scanId) {
@@ -1556,7 +1557,8 @@ async function pollCurrentScan() {
 
         const changed =
             scanId !== latestSavedScanId ||
-            timestamp > lastCurrentScanTimestamp ||
+            timestamp !== lastCurrentScanTimestamp ||
+            status !== lastCurrentScanStatus ||
             idImageFile !== latestSavedIdImageFile;
 
         if (!changed) {
@@ -1568,6 +1570,7 @@ async function pollCurrentScan() {
         const previousIdImageFile = latestSavedIdImageFile;
         latestSavedIdImageFile = idImageFile;
         lastCurrentScanTimestamp = timestamp;
+        lastCurrentScanStatus = status;
 
         if (imageFile && thumb.style.display !== 'block') {
             showFaceThumb('face_scans/' + encodeURIComponent(imageFile) + '?t=' + Date.now());
@@ -1736,6 +1739,7 @@ async function saveCurrentFace() {
         latestSavedImageFile = json.image_file || '';
         latestSavedIdImageFile = '';
         lastCurrentScanTimestamp = Math.floor(Date.now() / 1000);
+        lastCurrentScanStatus = 'face_captured_waiting_for_id';
         ocrLastStartedFile = '';
         ocrLastCompletedFile = '';
 
