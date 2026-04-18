@@ -303,94 +303,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
         height:100%;
         pointer-events:none;
     }
-    .roi-tools{
-        margin-top:10px;
-        display:grid;
-        grid-template-columns:1fr 1fr;
-        gap:8px;
-        align-items:end;
-    }
-    .roi-tools label{
-        display:block;
-        font-size:12px;
-        color:var(--muted);
-        font-weight:700;
-    }
-    .roi-tools select{
-        margin-top:6px;
-    }
-    .roi-editor-modal{
-        position:fixed;
-        inset:0;
-        background:rgba(0,0,0,.62);
-        display:none;
-        align-items:center;
-        justify-content:center;
-        z-index:9999;
-        padding:18px;
-    }
-    .roi-editor-panel{
-        width:min(980px,96vw);
-        max-height:92vh;
-        overflow:auto;
-        background:#0d1722;
-        border:1px solid var(--line);
-        border-radius:16px;
-        padding:14px;
-    }
-    .roi-stage{
-        margin-top:10px;
-        position:relative;
-        border:1px solid var(--line);
-        border-radius:12px;
-        overflow:hidden;
-        background:#050b12;
-    }
-    .roi-stage img{
-        width:100%;
-        display:block;
-    }
-    #roiBoxLayer{
-        position:absolute;
-        inset:0;
-    }
-    .roi-box{
-        position:absolute;
-        border:2px solid rgba(255,59,48,.95);
-        background:rgba(255,59,48,.16);
-        min-width:30px;
-        min-height:24px;
-    }
-    .roi-box-label{
-        position:absolute;
-        top:-18px;
-        left:0;
-        font-size:11px;
-        background:rgba(255,59,48,.95);
-        color:#fff;
-        padding:2px 6px;
-        border-radius:6px;
-        font-weight:700;
-        cursor:move;
-        user-select:none;
-    }
-    .roi-box-handle{
-        position:absolute;
-        width:12px;
-        height:12px;
-        right:-6px;
-        bottom:-6px;
-        background:rgba(255,59,48,1);
-        border:1px solid #fff;
-        border-radius:2px;
-        cursor:nwse-resize;
-    }
-    .roi-editor-actions{
-        margin-top:12px;
-        display:flex;
-        gap:8px;
-        flex-wrap:wrap;
-    }
     .thumb-label{
         margin-top:14px;
         font-size:13px;
@@ -514,15 +426,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
                 <img id="idThumb" class="thumb" alt="Captured ID preview">
                 <canvas id="idOcrOverlay"></canvas>
             </div>
-            <div class="roi-tools">
-                <label>
-                    ID Type
-                    <select id="roiProfileSelect">
-                        <option value="wa_driver_licence">WA Driver Licence</option>
-                    </select>
-                </label>
-                <button id="editRoiBtn" class="secondary">Set Search Fields</button>
-            </div>
 
             <div class="thumb-label">OCR result</div>
             <pre id="ocrOutput" class="mono">No OCR run yet.</pre>
@@ -554,21 +457,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
 </div>
 
 <canvas id="ocrCanvas" class="hidden-canvas"></canvas>
-<div id="roiEditorModal" class="roi-editor-modal">
-    <div class="roi-editor-panel">
-        <h3 style="margin:0">Configure OCR Search Fields</h3>
-        <div class="small">Drag each red box to the target area. Use the bottom-right handle to resize. Save to apply this ID type profile.</div>
-        <div class="roi-stage">
-            <img id="roiEditorImage" alt="ROI editor image">
-            <div id="roiBoxLayer"></div>
-        </div>
-        <div class="roi-editor-actions">
-            <button id="roiSaveBtn">Save Field Layout</button>
-            <button id="roiResetBtn" class="secondary">Reset to Default</button>
-            <button id="roiCancelBtn" class="danger">Close</button>
-        </div>
-    </div>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="module">
@@ -588,14 +476,6 @@ const thumb = document.getElementById('thumb');
 const idPreviewWrap = document.getElementById('idPreviewWrap');
 const idThumb = document.getElementById('idThumb');
 const idOcrOverlay = document.getElementById('idOcrOverlay');
-const roiProfileSelect = document.getElementById('roiProfileSelect');
-const editRoiBtn = document.getElementById('editRoiBtn');
-const roiEditorModal = document.getElementById('roiEditorModal');
-const roiEditorImage = document.getElementById('roiEditorImage');
-const roiBoxLayer = document.getElementById('roiBoxLayer');
-const roiSaveBtn = document.getElementById('roiSaveBtn');
-const roiResetBtn = document.getElementById('roiResetBtn');
-const roiCancelBtn = document.getElementById('roiCancelBtn');
 const logBox = document.getElementById('log');
 const diagBox = document.getElementById('diag');
 const cameraSelect = document.getElementById('cameraSelect');
@@ -641,8 +521,6 @@ let ocrLastRawText = '';
 let ocrLastParsed = null;
 let ocrLastConfidence = null;
 let ocrEngine = null;
-let roiEditorDraft = null;
-let roiEditorState = null;
 
 function nowTime() {
     try {
@@ -780,126 +658,6 @@ function syncIdOverlayToImage() {
     if (!w || !h) return;
     idOcrOverlay.width = w;
     idOcrOverlay.height = h;
-}
-
-function roiProfileStorageKey() {
-    const profile = roiProfileSelect?.value || 'wa_driver_licence';
-    return 'ocr_roi_profile_' + profile;
-}
-
-function loadSavedRoisForCurrentProfile() {
-    try {
-        const raw = localStorage.getItem(roiProfileStorageKey());
-        if (!raw) return null;
-        return JSON.parse(raw);
-    } catch (e) {
-        warn('Failed to parse saved ROI profile', e);
-        return null;
-    }
-}
-
-function saveRoisForCurrentProfile(rois) {
-    try {
-        localStorage.setItem(roiProfileStorageKey(), JSON.stringify(rois));
-    } catch (e) {
-        warn('Failed to save ROI profile', e);
-    }
-}
-
-function applySavedOrDefaultRois() {
-    if (!ocrEngine) return;
-    const saved = loadSavedRoisForCurrentProfile();
-    if (saved) {
-        ocrEngine.setRois(saved);
-        return;
-    }
-    ocrEngine.setRois(ocrEngine.getDefaultRois());
-}
-
-function closeRoiEditor() {
-    roiEditorModal.style.display = 'none';
-    roiEditorDraft = null;
-    roiEditorState = null;
-    roiBoxLayer.innerHTML = '';
-}
-
-function clampRoiValue(v, min, max) {
-    return Math.max(min, Math.min(max, v));
-}
-
-function renderRoiEditorBoxes() {
-    if (!roiEditorDraft) return;
-    roiBoxLayer.innerHTML = '';
-    for (const key of Object.keys(roiEditorDraft)) {
-        const roi = roiEditorDraft[key];
-        const box = document.createElement('div');
-        box.className = 'roi-box';
-        box.dataset.key = key;
-        box.style.left = (roi.x * 100) + '%';
-        box.style.top = (roi.y * 100) + '%';
-        box.style.width = (roi.w * 100) + '%';
-        box.style.height = (roi.h * 100) + '%';
-
-        const label = document.createElement('div');
-        label.className = 'roi-box-label';
-        label.textContent = roi.label || key;
-        box.appendChild(label);
-
-        const handle = document.createElement('div');
-        handle.className = 'roi-box-handle';
-        box.appendChild(handle);
-
-        roiBoxLayer.appendChild(box);
-    }
-}
-
-function beginRoiPointer(mode, key, startEvent) {
-    if (!roiEditorDraft || !roiEditorDraft[key]) return;
-    startEvent.preventDefault();
-    const stageRect = roiBoxLayer.getBoundingClientRect();
-    const roi = roiEditorDraft[key];
-    roiEditorState = {
-        mode,
-        key,
-        startX: startEvent.clientX,
-        startY: startEvent.clientY,
-        startRoi: { ...roi },
-        stageRect
-    };
-}
-
-function onRoiPointerMove(event) {
-    if (!roiEditorState || !roiEditorDraft) return;
-    const { mode, key, startX, startY, startRoi, stageRect } = roiEditorState;
-    const dxPct = (event.clientX - startX) / Math.max(1, stageRect.width);
-    const dyPct = (event.clientY - startY) / Math.max(1, stageRect.height);
-    const roi = roiEditorDraft[key];
-    if (!roi) return;
-
-    if (mode === 'drag') {
-        roi.x = clampRoiValue(startRoi.x + dxPct, 0, 0.98 - startRoi.w);
-        roi.y = clampRoiValue(startRoi.y + dyPct, 0, 0.98 - startRoi.h);
-    } else {
-        roi.w = clampRoiValue(startRoi.w + dxPct, 0.05, 0.98 - startRoi.x);
-        roi.h = clampRoiValue(startRoi.h + dyPct, 0.05, 0.98 - startRoi.y);
-    }
-    renderRoiEditorBoxes();
-}
-
-function onRoiPointerUp() {
-    roiEditorState = null;
-}
-
-function openRoiEditor() {
-    if (!ocrEngine) return;
-    if (!idThumb.src || idThumb.style.display !== 'block') {
-        setStatus('Capture or load an ID image before setting search fields.');
-        return;
-    }
-    roiEditorImage.src = idThumb.src;
-    roiEditorDraft = ocrEngine.getRois();
-    roiEditorModal.style.display = 'flex';
-    renderRoiEditorBoxes();
 }
 
 function resetOcrUi(reason = 'Waiting for a linked ID image.') {
@@ -1773,44 +1531,6 @@ cameraSelect.addEventListener('change', () => {
 });
 idThumb.addEventListener('load', syncIdOverlayToImage);
 window.addEventListener('resize', syncIdOverlayToImage);
-editRoiBtn.addEventListener('click', openRoiEditor);
-roiCancelBtn.addEventListener('click', closeRoiEditor);
-roiResetBtn.addEventListener('click', () => {
-    if (!ocrEngine) return;
-    roiEditorDraft = ocrEngine.getDefaultRois();
-    renderRoiEditorBoxes();
-});
-roiSaveBtn.addEventListener('click', () => {
-    if (!ocrEngine || !roiEditorDraft) return;
-    const applied = ocrEngine.setRois(roiEditorDraft);
-    saveRoisForCurrentProfile(applied);
-    closeRoiEditor();
-    setStatus('Search fields saved for ID type profile.');
-});
-roiProfileSelect.addEventListener('change', () => {
-    applySavedOrDefaultRois();
-    setStatus('Applied search field profile: ' + (roiProfileSelect.value || 'default'));
-});
-roiEditorModal.addEventListener('click', (event) => {
-    if (event.target === roiEditorModal) {
-        closeRoiEditor();
-    }
-});
-roiBoxLayer.addEventListener('pointerdown', (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const box = target.closest('.roi-box');
-    if (!box) return;
-    const key = box.getAttribute('data-key') || '';
-    if (!key) return;
-    if (target.classList.contains('roi-box-handle')) {
-        beginRoiPointer('resize', key, event);
-        return;
-    }
-    beginRoiPointer('drag', key, event);
-});
-window.addEventListener('pointermove', onRoiPointerMove);
-window.addEventListener('pointerup', onRoiPointerUp);
 
 (async function boot() {
     appendLogLine('Boot start');
@@ -1821,7 +1541,6 @@ window.addEventListener('pointerup', onRoiPointerUp);
         roiCanvas: ocrCanvas,
         overlayCanvas: idOcrOverlay
     });
-    applySavedOrDefaultRois();
 
     if (!navigator.mediaDevices?.getUserMedia) {
         setStatus('This browser does not support getUserMedia.');

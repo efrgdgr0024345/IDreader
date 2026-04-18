@@ -10,10 +10,6 @@ function normalizeOcrText(text) {
         .trim();
 }
 
-function normalizeToken(text) {
-    return String(text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-}
-
 function extractDateCandidates(text) {
     const matches = [];
     const regex = /\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{1,2}\s+[A-Z]{3,9}\s+\d{2,4})\b/gi;
@@ -26,12 +22,12 @@ function extractLicenceNumber(text) {
     const lines = normalizeOcrText(text).split('\n').map(s => s.trim()).filter(Boolean);
 
     for (const line of lines) {
-        if (/lic|id|card|number|no/i.test(line)) {
+        if (/lic|id|card/i.test(line)) {
             const cleaned = line.replace(/[^A-Z0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
             const candidates = cleaned.match(/\b[A-Z0-9]{5,16}\b/g);
             if (candidates?.length) {
                 const ranked = candidates
-                    .filter(v => !/^(DRIVER|LICENCE|LICENSE|CLASS|CARD|AUSTRALIA|WESTERN|WA|DATE|BIRTH|EXPIRY|ADDRESS)$/i.test(v))
+                    .filter(v => !/^(DRIVER|LICENCE|LICENSE|CLASS|CARD|AUSTRALIA|WESTERN|WA)$/i.test(v))
                     .sort((a, b) => b.length - a.length);
                 if (ranked[0]) return ranked[0];
             }
@@ -41,7 +37,7 @@ function extractLicenceNumber(text) {
     const broad = normalizeOcrText(text).match(/\b[A-Z0-9]{6,16}\b/g) || [];
     return broad
         .filter(v => /[0-9]/.test(v))
-        .filter(v => !/^(AUSTRALIA|WESTERN|DRIVER|LICENCE|LICENSE|TRANSPORT)$/i.test(v))
+        .filter(v => !/^(AUSTRALIA|WESTERN|DRIVER|LICENCE|LICENSE)$/i.test(v))
         .sort((a, b) => b.length - a.length)[0] || null;
 }
 
@@ -49,9 +45,9 @@ function extractUpperName(text) {
     const lines = normalizeOcrText(text).split('\n').map(s => s.trim()).filter(Boolean);
     for (const line of lines) {
         const cleaned = line.replace(/[^A-Z' -]/g, '').replace(/\s+/g, ' ').trim();
-        if (!cleaned || cleaned.length < 4 || cleaned.length > 48) continue;
+        if (!cleaned || cleaned.length < 4 || cleaned.length > 42) continue;
         if (!/^[A-Z][A-Z' -]+$/.test(cleaned)) continue;
-        if (/\b(DRIVER|LICENCE|LICENSE|WESTERN|AUSTRALIA|DOB|EXP|ADDRESS|CLASS|TRANSPORT)\b/.test(cleaned)) continue;
+        if (/\b(DRIVER|LICENCE|LICENSE|WESTERN|AUSTRALIA|DOB|EXP|ADDRESS|CLASS)\b/.test(cleaned)) continue;
         if (cleaned.split(' ').length >= 2) return cleaned;
     }
     return null;
@@ -107,56 +103,22 @@ function parseOcrFields(fullText, perFieldText = {}) {
 }
 
 function defaultRois() {
-    // Baseline WA licence profile (relative coordinates).
-    return {
-        name: { key: 'name', label: 'Name', x: 0.03, y: 0.38, w: 0.47, h: 0.22 },
-        licence_number: { key: 'licence_number', label: 'Licence No', x: 0.76, y: 0.19, w: 0.21, h: 0.17 },
-        dob_expiry: { key: 'dob_expiry', label: 'DOB / Expiry', x: 0.03, y: 0.66, w: 0.62, h: 0.16 },
-        address: { key: 'address', label: 'Address', x: 0.03, y: 0.54, w: 0.47, h: 0.28 }
-    };
+    return [
+        { key: 'name', label: 'Name', x: 0.09, y: 0.17, w: 0.56, h: 0.18 },
+        { key: 'licence_number', label: 'Licence No', x: 0.53, y: 0.06, w: 0.42, h: 0.16 },
+        { key: 'dob_expiry', label: 'DOB / Expiry', x: 0.08, y: 0.50, w: 0.60, h: 0.18 },
+        { key: 'address', label: 'Address', x: 0.08, y: 0.66, w: 0.68, h: 0.26 }
+    ];
 }
 
 function roiToPixels(roi, width, height) {
     return {
         ...roi,
-        px: clamp(Math.round(width * roi.x), 0, width - 1),
-        py: clamp(Math.round(height * roi.y), 0, height - 1),
-        pw: clamp(Math.round(width * roi.w), 1, width),
-        ph: clamp(Math.round(height * roi.h), 1, height)
+        px: Math.max(0, Math.round(width * roi.x)),
+        py: Math.max(0, Math.round(height * roi.y)),
+        pw: Math.max(1, Math.round(width * roi.w)),
+        ph: Math.max(1, Math.round(height * roi.h))
     };
-}
-
-function clampBox(box, width, height) {
-    const px = clamp(Math.round(box.px), 0, width - 1);
-    const py = clamp(Math.round(box.py), 0, height - 1);
-    const pw = clamp(Math.round(box.pw), 1, width - px);
-    const ph = clamp(Math.round(box.ph), 1, height - py);
-    return { ...box, px, py, pw, ph };
-}
-
-function expandBox(box, padX, padY, width, height) {
-    return clampBox({
-        ...box,
-        px: box.px - padX,
-        py: box.py - padY,
-        pw: box.pw + (padX * 2),
-        ph: box.ph + (padY * 2)
-    }, width, height);
-}
-
-function limitedAdjust(baseBox, proposedBox, width, height, maxDxRatio = 0.08, maxDyRatio = 0.08) {
-    const maxDx = width * maxDxRatio;
-    const maxDy = height * maxDyRatio;
-    const dx = clamp(proposedBox.px - baseBox.px, -maxDx, maxDx);
-    const dy = clamp(proposedBox.py - baseBox.py, -maxDy, maxDy);
-
-    return clampBox({
-        ...baseBox,
-        px: baseBox.px + dx,
-        py: baseBox.py + dy,
-        pw: proposedBox.pw,
-        ph: proposedBox.ph
-    }, width, height);
 }
 
 function drawRoiOverlay(canvas, boxes = []) {
@@ -166,7 +128,7 @@ function drawRoiOverlay(canvas, boxes = []) {
     if (!boxes.length) return;
 
     ctx.strokeStyle = 'rgba(255, 59, 48, 0.95)';
-    ctx.fillStyle = 'rgba(255, 59, 48, 0.16)';
+    ctx.fillStyle = 'rgba(255, 59, 48, 0.18)';
     ctx.lineWidth = 2;
     ctx.font = 'bold 12px Arial';
 
@@ -179,7 +141,7 @@ function drawRoiOverlay(canvas, boxes = []) {
         ctx.fillRect(box.px, ly, labelW, 16);
         ctx.fillStyle = '#ffffff';
         ctx.fillText(label, box.px + 5, ly + 12);
-        ctx.fillStyle = 'rgba(255, 59, 48, 0.16)';
+        ctx.fillStyle = 'rgba(255, 59, 48, 0.18)';
     }
 }
 
@@ -187,7 +149,7 @@ function preprocessIntoCanvas(img, canvas) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const srcW = img.naturalWidth || img.width || 1;
     const srcH = img.naturalHeight || img.height || 1;
-    const targetW = Math.min(2800, Math.max(1400, srcW));
+    const targetW = Math.min(2600, Math.max(1200, srcW));
     const scale = targetW / srcW;
     const targetH = Math.max(1, Math.round(srcH * scale));
 
@@ -200,8 +162,8 @@ function preprocessIntoCanvas(img, canvas) {
     const d = imageData.data;
     for (let i = 0; i < d.length; i += 4) {
         const gray = clamp((0.299 * d[i]) + (0.587 * d[i + 1]) + (0.114 * d[i + 2]), 0, 255);
-        const boosted = clamp((gray - 128) * 1.60 + 128, 0, 255);
-        const bin = boosted > 170 ? 255 : boosted < 75 ? 0 : boosted;
+        const boosted = clamp((gray - 128) * 1.55 + 128, 0, 255);
+        const bin = boosted > 155 ? 255 : boosted < 80 ? 0 : boosted;
         d[i] = bin;
         d[i + 1] = bin;
         d[i + 2] = bin;
@@ -210,193 +172,45 @@ function preprocessIntoCanvas(img, canvas) {
     return { canvas, width: targetW, height: targetH };
 }
 
-function collectWordBoxes(result) {
-    const words = result?.data?.words;
-    if (!Array.isArray(words)) return [];
-
-    return words
-        .map((word) => {
-            const text = normalizeToken(word?.text || '');
-            if (!text) return null;
-            const bbox = word?.bbox || {};
-            const x0 = Number(bbox.x0 ?? 0);
-            const y0 = Number(bbox.y0 ?? 0);
-            const x1 = Number(bbox.x1 ?? x0);
-            const y1 = Number(bbox.y1 ?? y0);
-            if (x1 <= x0 || y1 <= y0) return null;
-            return {
-                rawText: word.text || '',
-                text,
-                confidence: Number(word?.confidence || 0),
-                x0,
-                y0,
-                x1,
-                y1,
-                cx: (x0 + x1) / 2,
-                cy: (y0 + y1) / 2,
-                w: x1 - x0,
-                h: y1 - y0
-            };
-        })
-        .filter(Boolean);
-}
-
-function findWord(words, patterns) {
-    return words.find((w) => patterns.some((p) => w.text.includes(p)));
-}
-
-function findNumericWord(words, minLen = 6) {
-    return words
-        .filter((w) => /\d/.test(w.text) && w.text.length >= minLen)
-        .sort((a, b) => (b.text.length - a.text.length) || (b.confidence - a.confidence))[0] || null;
-}
-
-function adaptiveBoxes(base, words, width, height) {
-    const boxes = {
-        name: roiToPixels(base.name, width, height),
-        licence_number: roiToPixels(base.licence_number, width, height),
-        dob_expiry: roiToPixels(base.dob_expiry, width, height),
-        address: roiToPixels(base.address, width, height)
-    };
-
-    const anchorLicence = findNumericWord(words, 7) || findWord(words, ['LICENCE', 'LICENSE', 'NO']);
-    if (anchorLicence) {
-        const proposed = expandBox({
-            ...boxes.licence_number,
-            px: anchorLicence.x0 - (anchorLicence.w * 0.9),
-            py: anchorLicence.y0 - (anchorLicence.h * 1.2),
-            pw: width * 0.24,
-            ph: height * 0.17
-        }, width * 0.008, height * 0.010, width, height);
-        boxes.licence_number = limitedAdjust(boxes.licence_number, proposed, width, height, 0.06, 0.05);
-    }
-
-    const anchorDob = findWord(words, ['DATEOFBIRTH', 'DATE', 'BIRTH', 'DOB']);
-    const anchorExp = findWord(words, ['EXPIRY', 'EXP', 'EXPIRYDATE']);
-    if (anchorDob || anchorExp) {
-        const ref = anchorDob || anchorExp;
-        const proposed = expandBox({
-            ...boxes.dob_expiry,
-            px: Math.max((anchorExp?.x0 ?? ref.x0) - (width * 0.26), 0),
-            py: ref.y0 - (ref.h * 1.4),
-            pw: width * 0.66,
-            ph: height * 0.16
-        }, width * 0.008, height * 0.010, width, height);
-        boxes.dob_expiry = limitedAdjust(boxes.dob_expiry, proposed, width, height, 0.06, 0.05);
-    }
-
-    const anchorAddress = findWord(words, ['ADDRESS']) || findWord(words, ['WAY', 'ST', 'STREET', 'ROAD', 'AVE']);
-    if (anchorAddress) {
-        const proposed = expandBox({
-            ...boxes.address,
-            px: Math.max(anchorAddress.x0 - (width * 0.04), 0),
-            py: Math.max(anchorAddress.y0 - (height * 0.08), 0),
-            pw: width * 0.52,
-            ph: height * 0.26
-        }, width * 0.008, height * 0.010, width, height);
-        boxes.address = limitedAdjust(boxes.address, proposed, width, height, 0.06, 0.05);
-    }
-
-    return Object.values(boxes).map((b) => clampBox(b, width, height));
-}
-
 function getRoiConfig(key) {
-    if (key === 'name') {
-        return {
-            tessedit_pageseg_mode: '7',
-            tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ '-"
-        };
-    }
-    if (key === 'licence_number') {
-        return {
-            tessedit_pageseg_mode: '7',
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-        };
-    }
-    if (key === 'dob_expiry') {
-        return {
-            tessedit_pageseg_mode: '6',
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/- '
-        };
-    }
-    if (key === 'address') {
-        return {
-            tessedit_pageseg_mode: '6',
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ,.-/'
-        };
-    }
+    if (key === 'name') return { tessedit_pageseg_mode: '7' };
+    if (key === 'licence_number') return { tessedit_pageseg_mode: '7', tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' };
+    if (key === 'dob_expiry') return { tessedit_pageseg_mode: '6', tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/- ' };
+    if (key === 'address') return { tessedit_pageseg_mode: '6' };
     return { tessedit_pageseg_mode: '6' };
-}
-
-function cropFromBox(canvas, box) {
-    const crop = document.createElement('canvas');
-    crop.width = box.pw;
-    crop.height = box.ph;
-    const cctx = crop.getContext('2d', { willReadFrequently: true });
-    cctx.drawImage(canvas, box.px, box.py, box.pw, box.ph, 0, 0, box.pw, box.ph);
-    return crop;
 }
 
 export function createIdOcrEngine(options) {
     const { tesseract, roiCanvas, overlayCanvas, rois = defaultRois() } = options;
     if (!tesseract) throw new Error('Tesseract instance is required');
     if (!roiCanvas) throw new Error('ROI canvas is required');
-    const baseRois = defaultRois();
-    let activeRois = { ...baseRois, ...rois };
-
-    function sanitizeRois(input) {
-        if (!input || typeof input !== 'object') {
-            return { ...baseRois };
-        }
-        const next = { ...baseRois };
-        for (const key of Object.keys(baseRois)) {
-            const raw = input[key];
-            if (!raw || typeof raw !== 'object') continue;
-            next[key] = {
-                ...baseRois[key],
-                ...raw,
-                x: clamp(Number(raw.x ?? baseRois[key].x), 0, 0.95),
-                y: clamp(Number(raw.y ?? baseRois[key].y), 0, 0.95),
-                w: clamp(Number(raw.w ?? baseRois[key].w), 0.03, 0.97),
-                h: clamp(Number(raw.h ?? baseRois[key].h), 0.03, 0.97)
-            };
-        }
-        return next;
-    }
 
     return {
         clearOverlay() {
             drawRoiOverlay(overlayCanvas, []);
         },
-        getDefaultRois() {
-            return JSON.parse(JSON.stringify(baseRois));
-        },
-        getRois() {
-            return JSON.parse(JSON.stringify(activeRois));
-        },
-        setRois(nextRois) {
-            activeRois = sanitizeRois(nextRois);
-            return this.getRois();
-        },
 
         async run(img, progressCb) {
             const { canvas, width, height } = preprocessIntoCanvas(img, roiCanvas);
+            const pixelBoxes = rois.map(r => roiToPixels(r, width, height));
+            drawRoiOverlay(overlayCanvas, pixelBoxes);
 
             const full = await tesseract.recognize(canvas, 'eng', {
-                tessedit_pageseg_mode: '6',
                 logger: (m) => progressCb?.('full', m)
             });
-
-            const words = collectWordBoxes(full);
-            const pixelBoxes = adaptiveBoxes(activeRois, words, width, height);
-            drawRoiOverlay(overlayCanvas, pixelBoxes);
 
             const perFieldText = {};
             const perFieldConfidence = {};
 
             for (const box of pixelBoxes) {
-                const crop = cropFromBox(canvas, box);
+                const crop = document.createElement('canvas');
+                crop.width = box.pw;
+                crop.height = box.ph;
+                const cctx = crop.getContext('2d', { willReadFrequently: true });
+                cctx.drawImage(canvas, box.px, box.py, box.pw, box.ph, 0, 0, box.pw, box.ph);
+
                 const res = await tesseract.recognize(crop, 'eng', {
+                    tessedit_pageseg_mode: '6',
                     ...getRoiConfig(box.key),
                     logger: (m) => progressCb?.(box.key, m)
                 });
@@ -415,8 +229,7 @@ export function createIdOcrEngine(options) {
                 confidence,
                 perFieldText,
                 perFieldConfidence,
-                boxes: pixelBoxes,
-                wordCount: words.length
+                boxes: pixelBoxes
             };
         }
     };
