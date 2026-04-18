@@ -10,6 +10,14 @@ if (!is_dir($saveDir)) {
     @mkdir($saveDir, 0775, true);
 }
 
+if (!is_dir($saveDir) || !is_writable($saveDir)) {
+    json_response([
+        'ok' => false,
+        'error' => 'Storage directory is not writable',
+        'path' => $saveDir
+    ], 500);
+}
+
 function json_response(array $data, int $status = 200): void {
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
@@ -140,7 +148,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
         'display_message' => 'Waiting for ID capture'
     ];
 
-    write_json_file($currentScanFile, $currentScanPayload);
+    if (!write_json_file($currentScanFile, $currentScanPayload)) {
+        json_response(['ok' => false, 'error' => 'Failed to update current scan state'], 500);
+    }
 
     json_response([
         'ok' => true,
