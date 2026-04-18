@@ -157,11 +157,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
 <title>Face Map Capture Debug</title>
 <style>
     :root{
-        --bg:#0a1016;
+        --bg:#ffffff;
         --panel:#101923;
         --panel2:#162332;
         --line:#294058;
-        --text:#e8f0f7;
+        --text:#111111;
         --muted:#99aec2;
         --good:#39d98a;
         --warn:#ffc857;
@@ -171,7 +171,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
     *{box-sizing:border-box}
     body{
         margin:0;
-        background:linear-gradient(180deg,#091018,#0f1722);
+        background:#ffffff;
         color:var(--text);
         font-family:Arial,Helvetica,sans-serif;
     }
@@ -282,6 +282,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
         border:1px solid var(--line);
         display:none;
         background:#091018;
+    }
+    .id-preview-wrap{
+        position:relative;
+        margin-top:10px;
+        display:none;
+    }
+    .id-preview-wrap .thumb{
+        margin-top:0;
+        display:block;
+    }
+    #idOcrOverlay{
+        position:absolute;
+        inset:0;
+        width:100%;
+        height:100%;
+        pointer-events:none;
     }
     .thumb-label{
         margin-top:14px;
@@ -402,7 +418,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
             <img id="thumb" class="thumb" alt="Captured face preview">
 
             <div class="thumb-label">Linked ID image</div>
-            <img id="idThumb" class="thumb" alt="Captured ID preview">
+            <div id="idPreviewWrap" class="id-preview-wrap">
+                <img id="idThumb" class="thumb" alt="Captured ID preview">
+                <canvas id="idOcrOverlay"></canvas>
+            </div>
 
             <div class="thumb-label">OCR result</div>
             <pre id="ocrOutput" class="mono">No OCR run yet.</pre>
@@ -437,6 +456,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="module">
+import { createIdOcrEngine } from './id-ocr.js';
+
 const MP_VERSION = "0.10.21";
 const MP_IMPORT_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/vision_bundle.mjs`;
 const MP_WASM_URL   = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
@@ -448,7 +469,9 @@ const ctx = overlay.getContext('2d');
 const statusBox = document.getElementById('status');
 const output = document.getElementById('output');
 const thumb = document.getElementById('thumb');
+const idPreviewWrap = document.getElementById('idPreviewWrap');
 const idThumb = document.getElementById('idThumb');
+const idOcrOverlay = document.getElementById('idOcrOverlay');
 const logBox = document.getElementById('log');
 const diagBox = document.getElementById('diag');
 const cameraSelect = document.getElementById('cameraSelect');
@@ -457,7 +480,6 @@ const ocrFields = document.getElementById('ocrFields');
 const ocrMeta = document.getElementById('ocrMeta');
 const ocrPills = document.getElementById('ocrPills');
 const ocrCanvas = document.getElementById('ocrCanvas');
-const ocrCanvasCtx = ocrCanvas.getContext('2d', { willReadFrequently: true });
 
 const statFaces = document.getElementById('statFaces');
 const statQuality = document.getElementById('statQuality');
@@ -493,6 +515,7 @@ let ocrLastCompletedFile = '';
 let ocrLastRawText = '';
 let ocrLastParsed = null;
 let ocrLastConfidence = null;
+let ocrEngine = null;
 
 function nowTime() {
     try {
@@ -611,12 +634,25 @@ function showFaceThumb(src) {
 
 function showIdThumb(file) {
     if (!file) {
+        idPreviewWrap.style.display = 'none';
         idThumb.style.display = 'none';
         idThumb.removeAttribute('src');
+        if (ocrEngine) {
+            ocrEngine.clearOverlay();
+        }
         return;
     }
     idThumb.src = 'face_scans/' + encodeURIComponent(file) + '?t=' + Date.now();
     idThumb.style.display = 'block';
+    idPreviewWrap.style.display = 'block';
+}
+
+function syncIdOverlayToImage() {
+    const w = idThumb.naturalWidth || idThumb.clientWidth || 0;
+    const h = idThumb.naturalHeight || idThumb.clientHeight || 0;
+    if (!w || !h) return;
+    idOcrOverlay.width = w;
+    idOcrOverlay.height = h;
 }
 
 function resetOcrUi(reason = 'Waiting for a linked ID image.') {
@@ -1044,120 +1080,6 @@ function makeJpegSnapshot() {
     return snap.toDataURL('image/jpeg', 0.92);
 }
 
-function normalizeOcrText(text) {
-    return String(text || '')
-        .replace(/\r/g, '\n')
-        .replace(/[ \t]+/g, ' ')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-}
-
-function extractDateCandidates(text) {
-    const matches = [];
-    const regex = /\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{1,2}\s+[A-Z]{3,9}\s+\d{2,4})\b/gi;
-    let m;
-    while ((m = regex.exec(text)) !== null) {
-        matches.push(m[1]);
-    }
-    return [...new Set(matches)];
-}
-
-function extractLicenceNumber(text) {
-    const lines = normalizeOcrText(text).split('\n').map(s => s.trim()).filter(Boolean);
-
-    for (const line of lines) {
-        if (/lic/i.test(line)) {
-            const cleaned = line.replace(/[^A-Z0-9 ]/gi, ' ').replace(/\s+/g, ' ').trim();
-            const candidates = cleaned.match(/\b[A-Z0-9]{5,16}\b/g);
-            if (candidates && candidates.length) {
-                const ranked = candidates
-                    .filter(v => !/^(DRIVER|LICENCE|LICENSE|CLASS|CARD|AUSTRALIA|WESTERN|WA)$/i.test(v))
-                    .sort((a, b) => b.length - a.length);
-                if (ranked[0]) return ranked[0];
-            }
-        }
-    }
-
-    const broadCandidates = normalizeOcrText(text).match(/\b[A-Z0-9]{6,16}\b/g) || [];
-    const rankedBroad = broadCandidates
-        .filter(v => /[0-9]/.test(v))
-        .filter(v => !/^(AUSTRALIA|WESTERN|DRIVER|LICENCE|LICENSE)$/i.test(v))
-        .sort((a, b) => b.length - a.length);
-
-    return rankedBroad[0] || null;
-}
-
-function extractUpperName(text) {
-    const lines = normalizeOcrText(text).split('\n').map(s => s.trim()).filter(Boolean);
-
-    for (const line of lines) {
-        const cleaned = line.replace(/[^A-Z' -]/g, '').replace(/\s+/g, ' ').trim();
-        if (!cleaned) continue;
-        if (cleaned.length < 4 || cleaned.length > 40) continue;
-        if (!/^[A-Z][A-Z' -]+$/.test(cleaned)) continue;
-        if (/\b(DRIVER|LICENCE|LICENSE|WESTERN|AUSTRALIA|DOB|EXP|ADDRESS|CLASS)\b/.test(cleaned)) continue;
-        if (cleaned.split(' ').length >= 2) {
-            return cleaned;
-        }
-    }
-
-    return null;
-}
-
-function extractAddress(text) {
-    const lines = normalizeOcrText(text).split('\n').map(s => s.trim()).filter(Boolean);
-    const addressish = [];
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (/\b(address|addr)\b/i.test(line)) {
-            const next = lines[i + 1] || '';
-            const combined = [line.replace(/\baddress\b[: ]*/i, '').trim(), next].filter(Boolean).join(' ').trim();
-            if (combined) return combined;
-        }
-        if (/\d+/.test(line) && /\b(ST|STREET|RD|ROAD|AVE|AVENUE|DR|DRIVE|WAY|CRES|COURT|CL|LANE|LN|BLVD|HWY|PLACE|PL)\b/i.test(line)) {
-            addressish.push(line);
-        }
-    }
-
-    return addressish[0] || null;
-}
-
-function parseOcrFields(text) {
-    const normalized = normalizeOcrText(text);
-    const dateCandidates = extractDateCandidates(normalized);
-    const licenceNumber = extractLicenceNumber(normalized);
-    const name = extractUpperName(normalized);
-    const address = extractAddress(normalized);
-
-    let dob = null;
-    let expiry = null;
-
-    const lines = normalized.split('\n').map(s => s.trim()).filter(Boolean);
-    for (const line of lines) {
-        if (!dob && /\b(dob|birth|date of birth)\b/i.test(line)) {
-            const m = line.match(/\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{1,2}\s+[A-Z]{3,9}\s+\d{2,4})\b/i);
-            if (m) dob = m[1];
-        }
-        if (!expiry && /\b(exp|expiry|expires)\b/i.test(line)) {
-            const m = line.match(/\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{1,2}\s+[A-Z]{3,9}\s+\d{2,4})\b/i);
-            if (m) expiry = m[1];
-        }
-    }
-
-    if (!dob && dateCandidates.length) dob = dateCandidates[0] || null;
-    if (!expiry && dateCandidates.length > 1) expiry = dateCandidates[1] || null;
-
-    return {
-        name,
-        licence_number: licenceNumber,
-        dob,
-        expiry,
-        address,
-        date_candidates: dateCandidates
-    };
-}
-
 function renderParsedFields(parsed) {
     const parts = [];
 
@@ -1173,46 +1095,13 @@ function renderParsedFields(parsed) {
     ocrFields.textContent = parts.length ? parts.join('\n') : 'No strong fields parsed yet.';
 }
 
-function preprocessImageForOcr(img) {
-    const srcW = img.naturalWidth || img.width || 1;
-    const srcH = img.naturalHeight || img.height || 1;
-
-    const targetW = Math.min(2200, Math.max(1000, srcW));
-    const scale = targetW / srcW;
-    const targetH = Math.max(1, Math.round(srcH * scale));
-
-    ocrCanvas.width = targetW;
-    ocrCanvas.height = targetH;
-
-    ocrCanvasCtx.clearRect(0, 0, targetW, targetH);
-    ocrCanvasCtx.drawImage(img, 0, 0, targetW, targetH);
-
-    const imageData = ocrCanvasCtx.getImageData(0, 0, targetW, targetH);
-    const data = imageData.data;
-
-    for (let i = 0; i < data.length; i += 4) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-
-        let gray = (0.299 * r) + (0.587 * g) + (0.114 * b);
-
-        gray = (gray - 128) * 1.35 + 128;
-        gray = clamp(gray, 0, 255);
-
-        data[i] = gray;
-        data[i + 1] = gray;
-        data[i + 2] = gray;
-    }
-
-    ocrCanvasCtx.putImageData(imageData, 0, 0);
-    return ocrCanvas;
-}
-
 async function runIdOcrFromCurrentImage(fileName) {
     try {
         if (!window.Tesseract) {
             throw new Error('Tesseract.js did not load');
+        }
+        if (!ocrEngine) {
+            throw new Error('OCR engine not initialized');
         }
 
         if (!fileName) {
@@ -1261,31 +1150,34 @@ async function runIdOcrFromCurrentImage(fileName) {
         addOcrPill('Linked ID image detected', 'ocr-good');
         addOcrPill('Browser OCR started', 'ocr-warn');
 
-        const preprocessedCanvas = preprocessImageForOcr(idThumb);
+        syncIdOverlayToImage();
+        const result = await ocrEngine.run(idThumb, (stage, m) => {
+            if (!m || !m.status) return;
+            const pct = Math.max(0, Math.min(100, Math.round((m.progress || 0) * 100)));
+            statOcr.textContent = `OCR: ${pct}%`;
+            setOcrStatus(`OCR [${stage}] ${m.status} ${pct}%`);
+        });
 
-        const result = await window.Tesseract.recognize(
-            preprocessedCanvas,
-            'eng',
-            {
-                logger: (m) => {
-                    if (!m || !m.status) return;
-                    const pct = Math.max(0, Math.min(100, Math.round((m.progress || 0) * 100)));
-                    statOcr.textContent = `OCR: ${pct}%`;
-                    setOcrStatus(`OCR ${m.status} ${pct}%`);
-                }
-            }
-        );
-
-        const rawText = normalizeOcrText(result?.data?.text || '');
-        const confidence = Number((result?.data?.confidence || 0).toFixed(2));
-        const parsed = parseOcrFields(rawText);
+        const rawText = result.fullText;
+        const confidence = result.confidence;
+        const parsed = result.parsed;
 
         ocrLastCompletedFile = fileName;
         ocrLastRawText = rawText;
         ocrLastConfidence = confidence;
         ocrLastParsed = parsed;
 
-        setOcrOutput(rawText || 'OCR finished, but no text was found.');
+        const fieldDetails = Object.entries(result.perFieldText || {})
+            .map(([key, value]) => {
+                const pct = result.perFieldConfidence?.[key] ?? 0;
+                return `--- ${key} (${pct}%) ---\n${value || '(no text)'}`;
+            })
+            .join('\n\n');
+
+        setOcrOutput(
+            (rawText ? `FULL OCR\n${rawText}` : 'OCR finished, but no text was found.') +
+            (fieldDetails ? '\n\n' + fieldDetails : '')
+        );
         renderParsedFields(parsed);
 
         clearOcrPills();
@@ -1294,6 +1186,7 @@ async function runIdOcrFromCurrentImage(fileName) {
         addOcrPill(parsed.licence_number ? 'Licence number found' : 'Licence number unclear', parsed.licence_number ? 'ocr-good' : 'ocr-warn');
         addOcrPill(parsed.dob ? 'DOB found' : 'DOB unclear', parsed.dob ? 'ocr-good' : 'ocr-warn');
         addOcrPill(parsed.expiry ? 'Expiry found' : 'Expiry unclear', parsed.expiry ? 'ocr-good' : 'ocr-warn');
+        addOcrPill(parsed.address ? 'Address found' : 'Address unclear', parsed.address ? 'ocr-good' : 'ocr-warn');
 
         statOcr.textContent = confidence ? `OCR: done ${confidence}%` : 'OCR: done';
         setOcrStatus(
@@ -1628,11 +1521,18 @@ cameraSelect.addEventListener('change', () => {
         label: cameraSelect.options[cameraSelect.selectedIndex]?.text || ''
     });
 });
+idThumb.addEventListener('load', syncIdOverlayToImage);
+window.addEventListener('resize', syncIdOverlayToImage);
 
 (async function boot() {
     appendLogLine('Boot start');
     updateDiagnostics();
     resetOcrUi();
+    ocrEngine = createIdOcrEngine({
+        tesseract: window.Tesseract,
+        roiCanvas: ocrCanvas,
+        overlayCanvas: idOcrOverlay
+    });
 
     if (!navigator.mediaDevices?.getUserMedia) {
         setStatus('This browser does not support getUserMedia.');
