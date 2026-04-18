@@ -577,6 +577,8 @@ if (is_array($initialCurrentScan) && !empty($initialCurrentScan['id_image_file']
 <script>
 let activeScanId = '';
 let lastSeenTimestamp = 0;
+let lastSeenStatus = '';
+let lastSeenFaceImageFile = '';
 let stream = null;
 let captureLocked = false;
 let activeStatus = '';
@@ -1178,17 +1180,29 @@ async function pollCurrentScan() {
 
         if (!scanId) return;
 
+        const changed =
+            scanId !== activeScanId ||
+            ts !== lastSeenTimestamp ||
+            status !== lastSeenStatus ||
+            faceImageFile !== lastSeenFaceImageFile;
+
         activeStatus = status;
 
-        if (scanId !== activeScanId || ts > lastSeenTimestamp) {
+        if (changed) {
             activeScanId = scanId;
             lastSeenTimestamp = ts;
+            lastSeenStatus = status;
+            lastSeenFaceImageFile = faceImageFile;
             captureLocked = false;
             latestCroppedDataUrl = '';
             latestDetection = null;
             stableDetectionSince = 0;
 
             if (status === 'face_captured_waiting_for_id') {
+                if (idImageFile) {
+                    idPreview.removeAttribute('src');
+                    idPreview.style.display = 'none';
+                }
                 setStatus(
                     'New face scan detected.\n' +
                     'Line the licence up in the box, then tap Capture ID.'
