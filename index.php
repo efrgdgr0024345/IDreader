@@ -1689,9 +1689,11 @@ window.addEventListener('resize', syncIdOverlayToImage);
 function pointerPos(evt) {
     const rect = idOcrOverlay.getBoundingClientRect();
     const e = evt.touches?.[0] || evt;
+    const scaleX = rect.width > 0 ? (idOcrOverlay.width / rect.width) : 1;
+    const scaleY = rect.height > 0 ? (idOcrOverlay.height / rect.height) : 1;
     return {
-        x: clamp(e.clientX - rect.left, 0, rect.width),
-        y: clamp(e.clientY - rect.top, 0, rect.height)
+        x: clamp((e.clientX - rect.left) * scaleX, 0, idOcrOverlay.width),
+        y: clamp((e.clientY - rect.top) * scaleY, 0, idOcrOverlay.height)
     };
 }
 
