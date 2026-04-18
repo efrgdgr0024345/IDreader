@@ -501,7 +501,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="module">
-import { createIdOcrEngine, defaultRois, drawRoiOverlayNormalized, sanitizeRois } from './id-ocr.js';
+const { createIdOcrEngine, defaultRois, drawRoiOverlayNormalized, sanitizeRois } = await import(new URL('id-ocr.js', window.location.href).toString());
 
 const MP_VERSION = "0.10.21";
 const MP_IMPORT_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/vision_bundle.mjs`;
