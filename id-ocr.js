@@ -102,13 +102,32 @@ function parseOcrFields(fullText, perFieldText = {}) {
     };
 }
 
-function defaultRois() {
+export function defaultRois() {
     return [
         { key: 'name', label: 'Name', x: 0.09, y: 0.17, w: 0.56, h: 0.18 },
         { key: 'licence_number', label: 'Licence No', x: 0.53, y: 0.06, w: 0.42, h: 0.16 },
         { key: 'dob_expiry', label: 'DOB / Expiry', x: 0.08, y: 0.50, w: 0.60, h: 0.18 },
         { key: 'address', label: 'Address', x: 0.08, y: 0.66, w: 0.68, h: 0.26 }
     ];
+}
+
+export function sanitizeRoi(roi) {
+    return {
+        ...roi,
+        x: clamp(Number(roi.x || 0), 0, 0.98),
+        y: clamp(Number(roi.y || 0), 0, 0.98),
+        w: clamp(Number(roi.w || 0.1), 0.02, 1),
+        h: clamp(Number(roi.h || 0.1), 0.02, 1)
+    };
+}
+
+export function sanitizeRois(rois = []) {
+    return rois.map(roi => {
+        const cleaned = sanitizeRoi(roi);
+        cleaned.w = clamp(cleaned.w, 0.02, 1 - cleaned.x);
+        cleaned.h = clamp(cleaned.h, 0.02, 1 - cleaned.y);
+        return cleaned;
+    });
 }
 
 function roiToPixels(roi, width, height) {
@@ -121,35 +140,43 @@ function roiToPixels(roi, width, height) {
     };
 }
 
-function drawRoiOverlay(canvas, boxes = []) {
+function drawRoiOverlay(canvas, boxes = [], options = {}) {
     const ctx = canvas?.getContext?.('2d');
     if (!ctx || !canvas) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!boxes.length) return;
 
-    ctx.strokeStyle = 'rgba(255, 59, 48, 0.95)';
-    ctx.fillStyle = 'rgba(255, 59, 48, 0.18)';
+    const accent = options.accent || 'rgba(255, 59, 48, 0.95)';
+    const fill = options.fill || 'rgba(255, 59, 48, 0.15)';
+
     ctx.lineWidth = 2;
     ctx.font = 'bold 12px Arial';
 
     for (const box of boxes) {
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = accent;
         ctx.fillRect(box.px, box.py, box.pw, box.ph);
         ctx.strokeRect(box.px, box.py, box.pw, box.ph);
+
         const label = box.label || box.key;
-        const labelW = Math.max(56, ctx.measureText(label).width + 10);
-        const ly = Math.max(0, box.py - 18);
-        ctx.fillRect(box.px, ly, labelW, 16);
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(label, box.px + 5, ly + 12);
-        ctx.fillStyle = 'rgba(255, 59, 48, 0.18)';
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.lineWidth = 3;
+        ctx.strokeText(label, box.px + 4, box.py + 13);
+        ctx.fillText(label, box.px + 4, box.py + 13);
     }
+}
+
+export function drawRoiOverlayNormalized(canvas, rois = [], options = {}) {
+    const boxes = sanitizeRois(rois).map(roi => roiToPixels(roi, canvas.width, canvas.height));
+    drawRoiOverlay(canvas, boxes, options);
 }
 
 function preprocessIntoCanvas(img, canvas) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const srcW = img.naturalWidth || img.width || 1;
     const srcH = img.naturalHeight || img.height || 1;
-    const targetW = Math.min(2600, Math.max(1200, srcW));
+    const targetW = Math.min(2800, Math.max(1400, srcW));
     const scale = targetW / srcW;
     const targetH = Math.max(1, Math.round(srcH * scale));
 
@@ -158,18 +185,44 @@ function preprocessIntoCanvas(img, canvas) {
     ctx.clearRect(0, 0, targetW, targetH);
     ctx.drawImage(img, 0, 0, targetW, targetH);
 
-    const imageData = ctx.getImageData(0, 0, targetW, targetH);
+    return { canvas, width: targetW, height: targetH };
+}
+
+function cloneCanvas(sourceCanvas) {
+    const out = document.createElement('canvas');
+    out.width = sourceCanvas.width;
+    out.height = sourceCanvas.height;
+    out.getContext('2d', { willReadFrequently: true }).drawImage(sourceCanvas, 0, 0);
+    return out;
+}
+
+function applyVariant(sourceCanvas, variant) {
+    if (variant === 'base') return sourceCanvas;
+
+    const out = cloneCanvas(sourceCanvas);
+    const ctx = out.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, out.width, out.height);
     const d = imageData.data;
+
     for (let i = 0; i < d.length; i += 4) {
         const gray = clamp((0.299 * d[i]) + (0.587 * d[i + 1]) + (0.114 * d[i + 2]), 0, 255);
-        const boosted = clamp((gray - 128) * 1.55 + 128, 0, 255);
-        const bin = boosted > 155 ? 255 : boosted < 80 ? 0 : boosted;
-        d[i] = bin;
-        d[i + 1] = bin;
-        d[i + 2] = bin;
+
+        if (variant === 'contrast') {
+            const boosted = clamp((gray - 128) * 1.65 + 128, 0, 255);
+            d[i] = boosted;
+            d[i + 1] = boosted;
+            d[i + 2] = boosted;
+        } else if (variant === 'binary') {
+            const boosted = clamp((gray - 128) * 1.55 + 128, 0, 255);
+            const bin = boosted > 150 ? 255 : boosted < 90 ? 0 : boosted;
+            d[i] = bin;
+            d[i + 1] = bin;
+            d[i + 2] = bin;
+        }
     }
+
     ctx.putImageData(imageData, 0, 0);
-    return { canvas, width: targetW, height: targetH };
+    return out;
 }
 
 function getRoiConfig(key) {
@@ -180,27 +233,69 @@ function getRoiConfig(key) {
     return { tessedit_pageseg_mode: '6' };
 }
 
+async function recognizeBest(tesseract, canvas, config, progressCb, variants = ['base', 'contrast', 'binary']) {
+    let best = null;
+
+    for (const variant of variants) {
+        const candidateCanvas = applyVariant(canvas, variant);
+        const result = await tesseract.recognize(candidateCanvas, 'eng', {
+            ...config,
+            logger: (m) => progressCb?.(variant, m)
+        });
+
+        const confidence = Number(result?.data?.confidence || 0);
+        const text = normalizeOcrText(result?.data?.text || '');
+        const score = confidence + Math.min(12, text.length / 16);
+
+        if (!best || score > best.score) {
+            best = {
+                variant,
+                score,
+                confidence,
+                text,
+                raw: result
+            };
+        }
+    }
+
+    return best;
+}
+
 export function createIdOcrEngine(options) {
-    const { tesseract, roiCanvas, overlayCanvas, rois = defaultRois() } = options;
+    const { tesseract, roiCanvas, overlayCanvas, getRois } = options;
     if (!tesseract) throw new Error('Tesseract instance is required');
     if (!roiCanvas) throw new Error('ROI canvas is required');
+
+    const resolveRois = () => sanitizeRois(typeof getRois === 'function' ? getRois() : defaultRois());
 
     return {
         clearOverlay() {
             drawRoiOverlay(overlayCanvas, []);
         },
 
+        drawOverlayForPreview(width, height, options = {}) {
+            if (!overlayCanvas) return;
+            overlayCanvas.width = width;
+            overlayCanvas.height = height;
+            drawRoiOverlayNormalized(overlayCanvas, resolveRois(), options);
+        },
+
         async run(img, progressCb) {
             const { canvas, width, height } = preprocessIntoCanvas(img, roiCanvas);
-            const pixelBoxes = rois.map(r => roiToPixels(r, width, height));
+            const activeRois = resolveRois();
+            const pixelBoxes = activeRois.map(r => roiToPixels(r, width, height));
             drawRoiOverlay(overlayCanvas, pixelBoxes);
 
-            const full = await tesseract.recognize(canvas, 'eng', {
-                logger: (m) => progressCb?.('full', m)
-            });
+            const full = await recognizeBest(
+                tesseract,
+                canvas,
+                { tessedit_pageseg_mode: '6' },
+                (variant, m) => progressCb?.(`full:${variant}`, m)
+            );
 
             const perFieldText = {};
             const perFieldConfidence = {};
+            const perFieldVariant = {};
 
             for (const box of pixelBoxes) {
                 const crop = document.createElement('canvas');
@@ -209,19 +304,21 @@ export function createIdOcrEngine(options) {
                 const cctx = crop.getContext('2d', { willReadFrequently: true });
                 cctx.drawImage(canvas, box.px, box.py, box.pw, box.ph, 0, 0, box.pw, box.ph);
 
-                const res = await tesseract.recognize(crop, 'eng', {
-                    tessedit_pageseg_mode: '6',
-                    ...getRoiConfig(box.key),
-                    logger: (m) => progressCb?.(box.key, m)
-                });
+                const res = await recognizeBest(
+                    tesseract,
+                    crop,
+                    { ...getRoiConfig(box.key) },
+                    (variant, m) => progressCb?.(`${box.key}:${variant}`, m)
+                );
 
-                perFieldText[box.key] = normalizeOcrText(res?.data?.text || '');
-                perFieldConfidence[box.key] = Number((res?.data?.confidence || 0).toFixed(2));
+                perFieldText[box.key] = res?.text || '';
+                perFieldConfidence[box.key] = Number((res?.confidence || 0).toFixed(2));
+                perFieldVariant[box.key] = res?.variant || 'base';
             }
 
-            const fullText = normalizeOcrText(full?.data?.text || '');
+            const fullText = full?.text || '';
             const parsed = parseOcrFields(fullText, perFieldText);
-            const confidence = Number((full?.data?.confidence || 0).toFixed(2));
+            const confidence = Number((full?.confidence || 0).toFixed(2));
 
             return {
                 fullText,
@@ -229,7 +326,10 @@ export function createIdOcrEngine(options) {
                 confidence,
                 perFieldText,
                 perFieldConfidence,
-                boxes: pixelBoxes
+                perFieldVariant,
+                boxes: pixelBoxes,
+                rois: activeRois,
+                fullVariant: full?.variant || 'base'
             };
         }
     };
