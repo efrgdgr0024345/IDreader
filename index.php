@@ -378,6 +378,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
         color:#eef5fb;
         word-break:break-word;
     }
+
+    .roi-controls{
+        margin-top:10px;
+        display:flex;
+        gap:8px;
+        flex-wrap:wrap;
+    }
+    .roi-controls button{
+        padding:8px 11px;
+        border-radius:10px;
+        border:1px solid var(--line);
+        background:#122133;
+        color:#eef5fb;
+        font-weight:700;
+        cursor:pointer;
+    }
+    .roi-controls button.active{
+        border-color:var(--warn);
+        background:#3a2d12;
+    }
+    .roi-hint{
+        margin-top:8px;
+        font-size:12px;
+        color:var(--muted);
+        min-height:18px;
+    }
     .hidden-canvas{
         display:none;
     }
@@ -436,6 +462,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
                 <img id="idThumb" class="thumb" alt="Captured ID preview">
                 <canvas id="idOcrOverlay"></canvas>
             </div>
+            <div class="roi-controls">
+                <button id="setBoxesBtn" type="button">Set boxes</button>
+                <button id="resetBoxesBtn" type="button">Reset boxes</button>
+            </div>
+            <div id="roiHint" class="roi-hint">Use the default WA template boxes for OCR.</div>
 
             <div class="thumb-label">OCR result</div>
             <pre id="ocrOutput" class="mono">No OCR run yet.</pre>
@@ -470,7 +501,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script type="module">
-import { createIdOcrEngine } from './id-ocr.js';
+import { createIdOcrEngine, defaultRois, drawRoiOverlayNormalized, sanitizeRois } from './id-ocr.js';
 
 const MP_VERSION = "0.10.21";
 const MP_IMPORT_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/vision_bundle.mjs`;
@@ -494,6 +525,9 @@ const ocrFields = document.getElementById('ocrFields');
 const ocrMeta = document.getElementById('ocrMeta');
 const ocrPills = document.getElementById('ocrPills');
 const ocrCanvas = document.getElementById('ocrCanvas');
+const setBoxesBtn = document.getElementById('setBoxesBtn');
+const resetBoxesBtn = document.getElementById('resetBoxesBtn');
+const roiHint = document.getElementById('roiHint');
 
 const statFaces = document.getElementById('statFaces');
 const statQuality = document.getElementById('statQuality');
@@ -531,6 +565,108 @@ let ocrLastRawText = '';
 let ocrLastParsed = null;
 let ocrLastConfidence = null;
 let ocrEngine = null;
+let editableRois = loadSavedRois();
+let roiEditMode = false;
+let roiInteraction = null;
+
+function roisStorageKey() {
+    return 'idreader_wa_rois_v1';
+}
+
+function loadSavedRois() {
+    try {
+        const raw = localStorage.getItem(roisStorageKey());
+        if (!raw) return defaultRois();
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed) || !parsed.length) return defaultRois();
+        return sanitizeRois(parsed.map((roi, idx) => ({
+            key: roi.key || defaultRois()[idx]?.key || `field_${idx}`,
+            label: roi.label || defaultRois()[idx]?.label || `Field ${idx + 1}`,
+            x: roi.x,
+            y: roi.y,
+            w: roi.w,
+            h: roi.h
+        })));
+    } catch (err) {
+        return defaultRois();
+    }
+}
+
+function saveRois() {
+    try {
+        localStorage.setItem(roisStorageKey(), JSON.stringify(editableRois));
+    } catch (err) {
+        warn('Failed to persist ROIs', describeError(err));
+    }
+}
+
+function drawCurrentRois() {
+    if (!idOcrOverlay.width || !idOcrOverlay.height) return;
+    drawRoiOverlayNormalized(idOcrOverlay, editableRois, roiEditMode
+        ? { accent: 'rgba(255, 209, 102, 0.98)', fill: 'rgba(255, 209, 102, 0.15)' }
+        : {});
+}
+
+function getRoiHit(x, y) {
+    const handles = ['nw', 'ne', 'sw', 'se'];
+    for (let i = editableRois.length - 1; i >= 0; i--) {
+        const roi = editableRois[i];
+        const left = roi.x * idOcrOverlay.width;
+        const top = roi.y * idOcrOverlay.height;
+        const right = (roi.x + roi.w) * idOcrOverlay.width;
+        const bottom = (roi.y + roi.h) * idOcrOverlay.height;
+        const r = 11;
+        const points = {
+            nw: [left, top],
+            ne: [right, top],
+            sw: [left, bottom],
+            se: [right, bottom]
+        };
+        for (const h of handles) {
+            const [hx, hy] = points[h];
+            if (Math.abs(x - hx) <= r && Math.abs(y - hy) <= r) {
+                return { index: i, mode: h };
+            }
+        }
+        if (x >= left && x <= right && y >= top && y <= bottom) {
+            return { index: i, mode: 'move' };
+        }
+    }
+    return null;
+}
+
+function applyRoiDrag(action, x, y) {
+    const idx = action.index;
+    const roi = { ...editableRois[idx] };
+    const dx = (x - action.startX) / idOcrOverlay.width;
+    const dy = (y - action.startY) / idOcrOverlay.height;
+
+    if (action.mode === 'move') {
+        roi.x = clamp(action.base.x + dx, 0, 1 - action.base.w);
+        roi.y = clamp(action.base.y + dy, 0, 1 - action.base.h);
+    } else {
+        const left0 = action.base.x;
+        const top0 = action.base.y;
+        const right0 = action.base.x + action.base.w;
+        const bottom0 = action.base.y + action.base.h;
+        let left = left0;
+        let right = right0;
+        let top = top0;
+        let bottom = bottom0;
+
+        if (action.mode.includes('w')) left = clamp(left0 + dx, 0, right0 - 0.04);
+        if (action.mode.includes('e')) right = clamp(right0 + dx, left + 0.04, 1);
+        if (action.mode.includes('n')) top = clamp(top0 + dy, 0, bottom0 - 0.04);
+        if (action.mode.includes('s')) bottom = clamp(bottom0 + dy, top + 0.04, 1);
+
+        roi.x = left;
+        roi.y = top;
+        roi.w = right - left;
+        roi.h = bottom - top;
+    }
+
+    editableRois[idx] = sanitizeRois([roi])[0];
+}
 
 function nowTime() {
     try {
@@ -660,6 +796,9 @@ function showIdThumb(file) {
     idThumb.src = 'face_scans/' + encodeURIComponent(file) + '?t=' + Date.now();
     idThumb.style.display = 'block';
     idPreviewWrap.style.display = 'block';
+    if (idThumb.complete && idThumb.naturalWidth) {
+        drawCurrentRois();
+    }
 }
 
 function syncIdOverlayToImage() {
@@ -668,6 +807,7 @@ function syncIdOverlayToImage() {
     if (!w || !h) return;
     idOcrOverlay.width = w;
     idOcrOverlay.height = h;
+    drawCurrentRois();
 }
 
 function resetOcrUi(reason = 'Waiting for a linked ID image.') {
@@ -1197,11 +1337,15 @@ async function runIdOcrFromCurrentImage(fileName) {
 
         clearOcrPills();
         addOcrPill(`Confidence ${confidence}%`, confidence >= 75 ? 'ocr-good' : (confidence >= 50 ? 'ocr-warn' : 'ocr-bad'));
+        addOcrPill(`Full pass: ${result.fullVariant}`, 'ocr-good');
         addOcrPill(parsed.name ? 'Name found' : 'Name unclear', parsed.name ? 'ocr-good' : 'ocr-warn');
         addOcrPill(parsed.licence_number ? 'Licence number found' : 'Licence number unclear', parsed.licence_number ? 'ocr-good' : 'ocr-warn');
         addOcrPill(parsed.dob ? 'DOB found' : 'DOB unclear', parsed.dob ? 'ocr-good' : 'ocr-warn');
         addOcrPill(parsed.expiry ? 'Expiry found' : 'Expiry unclear', parsed.expiry ? 'ocr-good' : 'ocr-warn');
         addOcrPill(parsed.address ? 'Address found' : 'Address unclear', parsed.address ? 'ocr-good' : 'ocr-warn');
+        Object.entries(result.perFieldVariant || {}).forEach(([key, variant]) => {
+            addOcrPill(`${key}: ${variant}`, 'ocr-good');
+        });
 
         statOcr.textContent = confidence ? `OCR: done ${confidence}%` : 'OCR: done';
         setOcrStatus(
@@ -1542,6 +1686,69 @@ cameraSelect.addEventListener('change', () => {
 idThumb.addEventListener('load', syncIdOverlayToImage);
 window.addEventListener('resize', syncIdOverlayToImage);
 
+function pointerPos(evt) {
+    const rect = idOcrOverlay.getBoundingClientRect();
+    const e = evt.touches?.[0] || evt;
+    return {
+        x: clamp(e.clientX - rect.left, 0, rect.width),
+        y: clamp(e.clientY - rect.top, 0, rect.height)
+    };
+}
+
+function onRoiPointerDown(evt) {
+    if (!roiEditMode || !idThumb.naturalWidth) return;
+    const p = pointerPos(evt);
+    const hit = getRoiHit(p.x, p.y);
+    if (!hit) return;
+    evt.preventDefault();
+    const base = { ...editableRois[hit.index] };
+    roiInteraction = {
+        ...hit,
+        startX: p.x,
+        startY: p.y,
+        base
+    };
+}
+
+function onRoiPointerMove(evt) {
+    if (!roiEditMode || !roiInteraction) return;
+    evt.preventDefault();
+    const p = pointerPos(evt);
+    applyRoiDrag(roiInteraction, p.x, p.y);
+    drawCurrentRois();
+}
+
+function onRoiPointerUp() {
+    if (!roiInteraction) return;
+    roiInteraction = null;
+    saveRois();
+}
+
+setBoxesBtn.addEventListener('click', () => {
+    roiEditMode = !roiEditMode;
+    idOcrOverlay.style.pointerEvents = roiEditMode ? 'auto' : 'none';
+    setBoxesBtn.classList.toggle('active', roiEditMode);
+    setBoxesBtn.textContent = roiEditMode ? 'Lock boxes' : 'Set boxes';
+    roiHint.textContent = roiEditMode
+        ? 'Drag inside a box to move it. Drag corners to resize. Boxes are saved automatically.'
+        : 'Using your saved WA template boxes for OCR.';
+    drawCurrentRois();
+});
+
+resetBoxesBtn.addEventListener('click', () => {
+    editableRois = defaultRois();
+    saveRois();
+    drawCurrentRois();
+    roiHint.textContent = 'Boxes reset to default WA template.';
+});
+
+idOcrOverlay.addEventListener('mousedown', onRoiPointerDown);
+idOcrOverlay.addEventListener('mousemove', onRoiPointerMove);
+window.addEventListener('mouseup', onRoiPointerUp);
+idOcrOverlay.addEventListener('touchstart', onRoiPointerDown, { passive: false });
+idOcrOverlay.addEventListener('touchmove', onRoiPointerMove, { passive: false });
+window.addEventListener('touchend', onRoiPointerUp);
+
 (async function boot() {
     appendLogLine('Boot start');
     updateDiagnostics();
@@ -1549,8 +1756,11 @@ window.addEventListener('resize', syncIdOverlayToImage);
     ocrEngine = createIdOcrEngine({
         tesseract: window.Tesseract,
         roiCanvas: ocrCanvas,
-        overlayCanvas: idOcrOverlay
+        overlayCanvas: idOcrOverlay,
+        getRois: () => editableRois
     });
+
+    idOcrOverlay.style.pointerEvents = 'none';
 
     if (!navigator.mediaDevices?.getUserMedia) {
         setStatus('This browser does not support getUserMedia.');
