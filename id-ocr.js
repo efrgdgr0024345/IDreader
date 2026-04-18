@@ -341,10 +341,42 @@ export function createIdOcrEngine(options) {
     const { tesseract, roiCanvas, overlayCanvas, rois = defaultRois() } = options;
     if (!tesseract) throw new Error('Tesseract instance is required');
     if (!roiCanvas) throw new Error('ROI canvas is required');
+    const baseRois = defaultRois();
+    let activeRois = { ...baseRois, ...rois };
+
+    function sanitizeRois(input) {
+        if (!input || typeof input !== 'object') {
+            return { ...baseRois };
+        }
+        const next = { ...baseRois };
+        for (const key of Object.keys(baseRois)) {
+            const raw = input[key];
+            if (!raw || typeof raw !== 'object') continue;
+            next[key] = {
+                ...baseRois[key],
+                ...raw,
+                x: clamp(Number(raw.x ?? baseRois[key].x), 0, 0.95),
+                y: clamp(Number(raw.y ?? baseRois[key].y), 0, 0.95),
+                w: clamp(Number(raw.w ?? baseRois[key].w), 0.03, 0.97),
+                h: clamp(Number(raw.h ?? baseRois[key].h), 0.03, 0.97)
+            };
+        }
+        return next;
+    }
 
     return {
         clearOverlay() {
             drawRoiOverlay(overlayCanvas, []);
+        },
+        getDefaultRois() {
+            return JSON.parse(JSON.stringify(baseRois));
+        },
+        getRois() {
+            return JSON.parse(JSON.stringify(activeRois));
+        },
+        setRois(nextRois) {
+            activeRois = sanitizeRois(nextRois);
+            return this.getRois();
         },
 
         async run(img, progressCb) {
@@ -356,7 +388,7 @@ export function createIdOcrEngine(options) {
             });
 
             const words = collectWordBoxes(full);
-            const pixelBoxes = adaptiveBoxes(rois, words, width, height);
+            const pixelBoxes = adaptiveBoxes(activeRois, words, width, height);
             drawRoiOverlay(overlayCanvas, pixelBoxes);
 
             const perFieldText = {};
