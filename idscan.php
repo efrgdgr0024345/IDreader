@@ -182,13 +182,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
     $current['id_image_file'] = $primaryDisplayIdFile;
     $current['id_crop_image_file'] = $croppedImageFile;
     $current['id_full_image_file'] = $idImageFile;
+    $current['json_file'] = basename($scanJsonPath);
     $current['updated_at'] = date('c');
     $current['timestamp'] = time();
     $current['status'] = 'id_captured_complete';
     $current['ready_for_next_scan'] = true;
     $current['display_message'] = 'Ready to scan next person';
+    $current['id_scan_saved_at'] = date('c');
 
-    write_json_file($currentScanFile, $current);
+    if (!write_json_file($currentScanFile, $current)) {
+        json_response(['ok' => false, 'error' => 'Failed to update current_scan file'], 500);
+    }
 
     json_response([
         'ok' => true,
@@ -577,6 +581,8 @@ if (is_array($initialCurrentScan) && !empty($initialCurrentScan['id_image_file']
 <script>
 let activeScanId = '';
 let lastSeenTimestamp = 0;
+let lastSeenStatus = '';
+let lastSeenFaceImageFile = '';
 let stream = null;
 let captureLocked = false;
 let activeStatus = '';
@@ -1178,17 +1184,29 @@ async function pollCurrentScan() {
 
         if (!scanId) return;
 
+        const changed =
+            scanId !== activeScanId ||
+            ts !== lastSeenTimestamp ||
+            status !== lastSeenStatus ||
+            faceImageFile !== lastSeenFaceImageFile;
+
         activeStatus = status;
 
-        if (scanId !== activeScanId || ts > lastSeenTimestamp) {
+        if (changed) {
             activeScanId = scanId;
             lastSeenTimestamp = ts;
+            lastSeenStatus = status;
+            lastSeenFaceImageFile = faceImageFile;
             captureLocked = false;
             latestCroppedDataUrl = '';
             latestDetection = null;
             stableDetectionSince = 0;
 
             if (status === 'face_captured_waiting_for_id') {
+                if (idImageFile) {
+                    idPreview.removeAttribute('src');
+                    idPreview.style.display = 'none';
+                }
                 setStatus(
                     'New face scan detected.\n' +
                     'Line the licence up in the box, then tap Capture ID.'

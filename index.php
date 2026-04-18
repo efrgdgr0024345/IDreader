@@ -131,9 +131,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['ac
         'json_file' => basename($jsonPath),
         'image_file' => $savedImage ? basename($imagePath) : null,
         'id_image_file' => null,
+        'id_crop_image_file' => null,
+        'id_full_image_file' => null,
         'updated_at' => date('c'),
         'timestamp' => time(),
-        'status' => 'face_captured_waiting_for_id'
+        'status' => 'face_captured_waiting_for_id',
+        'ready_for_next_scan' => false,
+        'display_message' => 'Waiting for ID capture'
     ];
 
     write_json_file($currentScanFile, $currentScanPayload);
@@ -508,6 +512,7 @@ let latestSavedScanId = '';
 let latestSavedImageFile = '';
 let latestSavedIdImageFile = '';
 let lastCurrentScanTimestamp = 0;
+let lastCurrentScanStatus = '';
 
 let ocrInFlight = false;
 let ocrLastStartedFile = '';
@@ -1301,7 +1306,7 @@ async function pollCurrentScan() {
         const scanId = current.scan_id || '';
         const timestamp = Number(current.timestamp || 0);
         const imageFile = current.image_file || '';
-        const idImageFile = current.id_image_file || '';
+        const idImageFile = current.id_image_file || current.id_full_image_file || '';
         const status = current.status || '';
 
         if (!scanId) {
@@ -1310,7 +1315,8 @@ async function pollCurrentScan() {
 
         const changed =
             scanId !== latestSavedScanId ||
-            timestamp > lastCurrentScanTimestamp ||
+            timestamp !== lastCurrentScanTimestamp ||
+            status !== lastCurrentScanStatus ||
             idImageFile !== latestSavedIdImageFile;
 
         if (!changed) {
@@ -1322,6 +1328,7 @@ async function pollCurrentScan() {
         const previousIdImageFile = latestSavedIdImageFile;
         latestSavedIdImageFile = idImageFile;
         lastCurrentScanTimestamp = timestamp;
+        lastCurrentScanStatus = status;
 
         if (imageFile && thumb.style.display !== 'block') {
             showFaceThumb('face_scans/' + encodeURIComponent(imageFile) + '?t=' + Date.now());
@@ -1490,6 +1497,7 @@ async function saveCurrentFace() {
         latestSavedImageFile = json.image_file || '';
         latestSavedIdImageFile = '';
         lastCurrentScanTimestamp = Math.floor(Date.now() / 1000);
+        lastCurrentScanStatus = 'face_captured_waiting_for_id';
         ocrLastStartedFile = '';
         ocrLastCompletedFile = '';
 
