@@ -5,6 +5,7 @@ date_default_timezone_set('Australia/Perth');
 
 $saveDir = __DIR__ . '/face_scans';
 $currentScanFile = __DIR__ . '/current_scan.json';
+$roiSettingsFile = __DIR__ . '/id_roi_settings.json';
 
 if (!is_dir($saveDir)) {
     @mkdir($saveDir, 0775, true);
@@ -41,6 +42,53 @@ function read_json_file(string $filePath): ?array {
     return is_array($decoded) ? $decoded : null;
 }
 
+function default_rois(): array {
+    return [
+        ['key' => 'name', 'label' => 'Name', 'x' => 0.09, 'y' => 0.17, 'w' => 0.56, 'h' => 0.18],
+        ['key' => 'licence_number', 'label' => 'Licence No', 'x' => 0.53, 'y' => 0.06, 'w' => 0.42, 'h' => 0.16],
+        ['key' => 'dob_expiry', 'label' => 'DOB / Expiry', 'x' => 0.08, 'y' => 0.50, 'w' => 0.60, 'h' => 0.18],
+        ['key' => 'address', 'label' => 'Address', 'x' => 0.08, 'y' => 0.66, 'w' => 0.68, 'h' => 0.26],
+    ];
+}
+
+function clamp_float(float $value, float $min, float $max): float {
+    return max($min, min($max, $value));
+}
+
+function sanitize_single_roi(array $roi, array $fallback): array {
+    $x = clamp_float((float)($roi['x'] ?? $fallback['x']), 0.0, 0.98);
+    $y = clamp_float((float)($roi['y'] ?? $fallback['y']), 0.0, 0.98);
+    $w = clamp_float((float)($roi['w'] ?? $fallback['w']), 0.02, 1.0 - $x);
+    $h = clamp_float((float)($roi['h'] ?? $fallback['h']), 0.02, 1.0 - $y);
+
+    return [
+        'key' => (string)($roi['key'] ?? $fallback['key']),
+        'label' => (string)($roi['label'] ?? $fallback['label']),
+        'x' => $x,
+        'y' => $y,
+        'w' => $w,
+        'h' => $h,
+    ];
+}
+
+function sanitize_rois_payload($rois): array {
+    $defaults = default_rois();
+    if (!is_array($rois) || count($rois) === 0) {
+        return $defaults;
+    }
+
+    $cleaned = [];
+    foreach ($defaults as $idx => $fallback) {
+        $candidate = $rois[$idx] ?? [];
+        if (!is_array($candidate)) {
+            $candidate = [];
+        }
+        $cleaned[] = sanitize_single_roi($candidate, $fallback);
+    }
+
+    return $cleaned;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['action'] === 'poll_current_scan') {
     $data = read_json_file($currentScanFile);
     if (!$data) {
@@ -55,6 +103,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['act
         'ok' => true,
         'found' => true,
         'current_scan' => $data
+    ]);
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['action'] === 'get_roi_settings') {
+    $existing = read_json_file($roiSettingsFile);
+    $savedRois = sanitize_rois_payload($existing['rois'] ?? null);
+    $hasCustom = is_array($existing) && isset($existing['rois']);
+
+    json_response([
+        'ok' => true,
+        'has_custom' => $hasCustom,
+        'rois' => $savedRois,
+        'source_file' => basename($roiSettingsFile),
+    ]);
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['action'] === 'save_roi_settings') {
+    $raw = file_get_contents('php://input');
+    $payload = json_decode($raw, true);
+
+    if (!is_array($payload)) {
+        json_response(['ok' => false, 'error' => 'Invalid JSON payload'], 400);
+    }
+
+    $rois = sanitize_rois_payload($payload['rois'] ?? null);
+    $record = [
+        'updated_at' => date('c'),
+        'updated_by' => [
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'remote_addr' => $_SERVER['REMOTE_ADDR'] ?? '',
+        ],
+        'rois' => $rois,
+    ];
+
+    if (!write_json_file($roiSettingsFile, $record)) {
+        json_response(['ok' => false, 'error' => 'Failed to save ROI settings'], 500);
+    }
+
+    json_response([
+        'ok' => true,
+        'rois' => $rois,
+        'saved_file' => basename($roiSettingsFile),
+        'updated_at' => $record['updated_at'],
     ]);
 }
 
@@ -565,38 +656,56 @@ let ocrLastRawText = '';
 let ocrLastParsed = null;
 let ocrLastConfidence = null;
 let ocrEngine = null;
-let editableRois = loadSavedRois();
+let editableRois = defaultRois();
 let roiEditMode = false;
 let roiInteraction = null;
+let roiSaveInFlight = false;
+let roiSaveQueued = false;
 
-function roisStorageKey() {
-    return 'idreader_wa_rois_v1';
-}
-
-function loadSavedRois() {
+async function loadSavedRoisFromServer() {
     try {
-        const raw = localStorage.getItem(roisStorageKey());
-        if (!raw) return defaultRois();
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed) || !parsed.length) return defaultRois();
-        return sanitizeRois(parsed.map((roi, idx) => ({
-            key: roi.key || defaultRois()[idx]?.key || `field_${idx}`,
-            label: roi.label || defaultRois()[idx]?.label || `Field ${idx + 1}`,
-            x: roi.x,
-            y: roi.y,
-            w: roi.w,
-            h: roi.h
-        })));
+        const res = await fetch('?action=get_roi_settings', { cache: 'no-store' });
+        const json = await res.json();
+        if (!res.ok || !json?.ok || !Array.isArray(json.rois)) {
+            throw new Error(json?.error || ('HTTP ' + res.status));
+        }
+        editableRois = sanitizeRois(json.rois);
+        roiHint.textContent = json.has_custom
+            ? 'Using saved ROI boxes from id_roi_settings.json.'
+            : 'Using default WA template boxes.';
     } catch (err) {
-        return defaultRois();
+        editableRois = defaultRois();
+        warn('Failed to load ROI settings from JSON; using defaults', describeError(err));
+        roiHint.textContent = 'Using default WA template boxes (ROI settings JSON unavailable).';
     }
 }
 
-function saveRois() {
+async function saveRoisToServer() {
+    if (roiSaveInFlight) {
+        roiSaveQueued = true;
+        return;
+    }
+
+    roiSaveInFlight = true;
     try {
-        localStorage.setItem(roisStorageKey(), JSON.stringify(editableRois));
+        const res = await fetch('?action=save_roi_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rois: editableRois })
+        });
+        const json = await res.json();
+        if (!res.ok || !json?.ok) {
+            throw new Error(json?.error || ('HTTP ' + res.status));
+        }
+        editableRois = sanitizeRois(json.rois);
     } catch (err) {
-        warn('Failed to persist ROIs', describeError(err));
+        warn('Failed to save ROI settings to JSON', describeError(err));
+    } finally {
+        roiSaveInFlight = false;
+        if (roiSaveQueued) {
+            roiSaveQueued = false;
+            saveRoisToServer();
+        }
     }
 }
 
@@ -1723,7 +1832,7 @@ function onRoiPointerMove(evt) {
 function onRoiPointerUp() {
     if (!roiInteraction) return;
     roiInteraction = null;
-    saveRois();
+    saveRoisToServer();
 }
 
 setBoxesBtn.addEventListener('click', () => {
@@ -1739,9 +1848,9 @@ setBoxesBtn.addEventListener('click', () => {
 
 resetBoxesBtn.addEventListener('click', () => {
     editableRois = defaultRois();
-    saveRois();
+    saveRoisToServer();
     drawCurrentRois();
-    roiHint.textContent = 'Boxes reset to default WA template.';
+    roiHint.textContent = 'Boxes reset to default WA template and saved to id_roi_settings.json.';
 });
 
 idOcrOverlay.addEventListener('mousedown', onRoiPointerDown);
@@ -1755,6 +1864,7 @@ window.addEventListener('touchend', onRoiPointerUp);
     appendLogLine('Boot start');
     updateDiagnostics();
     resetOcrUi();
+    await loadSavedRoisFromServer();
     ocrEngine = createIdOcrEngine({
         tesseract: window.Tesseract,
         roiCanvas: ocrCanvas,
@@ -1779,6 +1889,7 @@ window.addEventListener('touchend', onRoiPointerUp);
 
     setStatus('Page ready. Click Start Camera.');
     updateDiagnostics();
+    drawCurrentRois();
 
     pollCurrentScan();
     setInterval(pollCurrentScan, 1000);
