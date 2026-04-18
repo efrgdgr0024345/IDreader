@@ -109,10 +109,10 @@ function parseOcrFields(fullText, perFieldText = {}) {
 function defaultRois() {
     // Baseline WA licence profile (relative coordinates).
     return {
-        name: { key: 'name', label: 'Name', x: 0.05, y: 0.28, w: 0.50, h: 0.20 },
-        licence_number: { key: 'licence_number', label: 'Licence No', x: 0.62, y: 0.14, w: 0.33, h: 0.16 },
-        dob_expiry: { key: 'dob_expiry', label: 'DOB / Expiry', x: 0.05, y: 0.58, w: 0.62, h: 0.18 },
-        address: { key: 'address', label: 'Address', x: 0.05, y: 0.44, w: 0.66, h: 0.38 }
+        name: { key: 'name', label: 'Name', x: 0.03, y: 0.38, w: 0.47, h: 0.22 },
+        licence_number: { key: 'licence_number', label: 'Licence No', x: 0.76, y: 0.19, w: 0.21, h: 0.17 },
+        dob_expiry: { key: 'dob_expiry', label: 'DOB / Expiry', x: 0.03, y: 0.66, w: 0.62, h: 0.16 },
+        address: { key: 'address', label: 'Address', x: 0.03, y: 0.54, w: 0.47, h: 0.28 }
     };
 }
 
@@ -141,6 +141,21 @@ function expandBox(box, padX, padY, width, height) {
         py: box.py - padY,
         pw: box.pw + (padX * 2),
         ph: box.ph + (padY * 2)
+    }, width, height);
+}
+
+function limitedAdjust(baseBox, proposedBox, width, height, maxDxRatio = 0.08, maxDyRatio = 0.08) {
+    const maxDx = width * maxDxRatio;
+    const maxDy = height * maxDyRatio;
+    const dx = clamp(proposedBox.px - baseBox.px, -maxDx, maxDx);
+    const dy = clamp(proposedBox.py - baseBox.py, -maxDy, maxDy);
+
+    return clampBox({
+        ...baseBox,
+        px: baseBox.px + dx,
+        py: baseBox.py + dy,
+        pw: proposedBox.pw,
+        ph: proposedBox.ph
     }, width, height);
 }
 
@@ -244,50 +259,42 @@ function adaptiveBoxes(base, words, width, height) {
         address: roiToPixels(base.address, width, height)
     };
 
-    const anchorName = findWord(words, ['NAME']);
-    if (anchorName) {
-        boxes.name = expandBox({
-            ...boxes.name,
-            px: anchorName.x0 + (anchorName.w * 0.8),
-            py: anchorName.y0 - (anchorName.h * 0.8),
-            pw: width * 0.45,
-            ph: height * 0.20
-        }, width * 0.012, height * 0.015, width, height);
-    }
-
     const anchorLicence = findNumericWord(words, 7) || findWord(words, ['LICENCE', 'LICENSE', 'NO']);
     if (anchorLicence) {
-        boxes.licence_number = expandBox({
+        const proposed = expandBox({
             ...boxes.licence_number,
-            px: anchorLicence.x0 - (anchorLicence.w * 1.4),
-            py: anchorLicence.y0 - (anchorLicence.h * 1.6),
-            pw: width * 0.34,
+            px: anchorLicence.x0 - (anchorLicence.w * 0.9),
+            py: anchorLicence.y0 - (anchorLicence.h * 1.2),
+            pw: width * 0.24,
             ph: height * 0.17
-        }, width * 0.012, height * 0.012, width, height);
+        }, width * 0.008, height * 0.010, width, height);
+        boxes.licence_number = limitedAdjust(boxes.licence_number, proposed, width, height, 0.06, 0.05);
     }
 
     const anchorDob = findWord(words, ['DATEOFBIRTH', 'DATE', 'BIRTH', 'DOB']);
     const anchorExp = findWord(words, ['EXPIRY', 'EXP', 'EXPIRYDATE']);
     if (anchorDob || anchorExp) {
         const ref = anchorDob || anchorExp;
-        boxes.dob_expiry = expandBox({
+        const proposed = expandBox({
             ...boxes.dob_expiry,
-            px: Math.max((anchorExp?.x0 ?? ref.x0) - (width * 0.34), 0),
-            py: ref.y0 - (ref.h * 1.8),
+            px: Math.max((anchorExp?.x0 ?? ref.x0) - (width * 0.26), 0),
+            py: ref.y0 - (ref.h * 1.4),
             pw: width * 0.66,
-            ph: height * 0.22
-        }, width * 0.010, height * 0.012, width, height);
+            ph: height * 0.16
+        }, width * 0.008, height * 0.010, width, height);
+        boxes.dob_expiry = limitedAdjust(boxes.dob_expiry, proposed, width, height, 0.06, 0.05);
     }
 
     const anchorAddress = findWord(words, ['ADDRESS']) || findWord(words, ['WAY', 'ST', 'STREET', 'ROAD', 'AVE']);
     if (anchorAddress) {
-        boxes.address = expandBox({
+        const proposed = expandBox({
             ...boxes.address,
             px: Math.max(anchorAddress.x0 - (width * 0.04), 0),
-            py: Math.max(anchorAddress.y0 - (height * 0.10), 0),
-            pw: width * 0.70,
-            ph: height * 0.30
-        }, width * 0.010, height * 0.012, width, height);
+            py: Math.max(anchorAddress.y0 - (height * 0.08), 0),
+            pw: width * 0.52,
+            ph: height * 0.26
+        }, width * 0.008, height * 0.010, width, height);
+        boxes.address = limitedAdjust(boxes.address, proposed, width, height, 0.06, 0.05);
     }
 
     return Object.values(boxes).map((b) => clampBox(b, width, height));
